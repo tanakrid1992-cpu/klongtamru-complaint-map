@@ -55,14 +55,13 @@
 <div id="toast" hidden role="status"></div>
 
 <script type="module">
-import { firebaseConfig, FB, CENTER, ZOOM, GOOGLE_MAPS_KEY, CATS, STATUS, esc, fmtDate, no, safePhotos, badge } from "./config.js";
+import { firebaseConfig, FB, CENTER, ZOOM, GOOGLE_MAPS_KEY, CATS, STATUS, esc, fmtDate, no, isPhoto, badge } from "./config.js";
 const { initializeApp } = await import(FB + "firebase-app.js");
-const { getFirestore, collection, query, orderBy, limit, onSnapshot, addDoc, setDoc, doc, serverTimestamp } = await import(FB + "firebase-firestore.js");
+const { getFirestore, collection, query, orderBy, limit, onSnapshot, addDoc, setDoc, getDocs, doc, serverTimestamp } = await import(FB + "firebase-firestore.js");
 const { getAuth, signInAnonymously } = await import(FB + "firebase-auth.js");
-const { getStorage, ref, uploadBytes, getDownloadURL } = await import(FB + "firebase-storage.js");
 
 const app = initializeApp(firebaseConfig);
-const db = getFirestore(app), auth = getAuth(app), st = getStorage(app);
+const db = getFirestore(app), auth = getAuth(app);
 const $ = (id) => document.getElementById(id);
 const toast = (m) => { $("toast").textContent = m; $("toast").hidden = false; setTimeout(() => ($("toast").hidden = true), 4000); };
 
@@ -112,7 +111,16 @@ const popup = (d) => `<div class="pop">${badge(d.status)} <span class="badge">${
 <h3>${esc(d.title)}</h3><p>${esc(d.detail)}</p>
 <p class="muted">${no(d.id)} · ${fmtDate(d.createdAt)}</p>
 ${d.note ? `<p><b>เจ้าหน้าที่:</b> ${esc(d.note)}</p>` : ""}
-${safePhotos(d.photos).map((u) => `<img src="${esc(u)}" alt="รูปประกอบ" loading="lazy">`).join("")}</div>`;
+<div data-ph>${d.photoCount > 0 ? '<span class="muted">กำลังโหลดรูป…</span>' : ""}</div></div>`;
+
+async function loadPhotos(d, el) {
+  const box = el?.querySelector("[data-ph]");
+  if (!box || !(d.photoCount > 0)) return;
+  try {
+    const s = await getDocs(collection(db, "complaints", d.id, "photos"));
+    box.innerHTML = s.docs.map((x) => x.data().data).filter(isPhoto).map((u) => `<img src="${u}" alt="รูปประกอบ">`).join("");
+  } catch { box.textContent = "โหลดรูปไม่ได้"; }
+}
 
 function render() {
   const kw = $("q").value.trim().toLowerCase();
@@ -130,7 +138,7 @@ function render() {
   for (const d of shown) {
     if (typeof d.lat !== "number" || typeof d.lng !== "number") continue;
     markers[d.id] = L.circleMarker([d.lat, d.lng], { radius: 11, color: "#fff", weight: 3, fillColor: (STATUS[d.status] || STATUS.pending).c, fillOpacity: 1 })
-      .bindPopup(popup(d), { maxWidth: 260 }).addTo(layer);
+      .bindPopup(popup(d), { maxWidth: 260 }).on("popupopen", (e) => loadPhotos(d, e.popup.getElement())).addTo(layer);
   }
 }
 
@@ -160,11 +168,13 @@ $("btnGps").onclick = locate;
 
 async function shrink(file) {
   const bmp = await createImageBitmap(file);
-  const s = Math.min(1, 1280 / Math.max(bmp.width, bmp.height));
+  const s = Math.min(1, 800 / Math.max(bmp.width, bmp.height));
   const c = document.createElement("canvas");
   c.width = Math.round(bmp.width * s); c.height = Math.round(bmp.height * s);
   c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
-  return new Promise((r) => c.toBlob(r, "image/jpeg", 0.8));
+  let q = 0.7, out;
+  do { out = c.toDataURL("image/jpeg", q); q -= 0.15; } while (out.length > 450000 && q > 0.2);
+  return out;
 }
 
 f.onsubmit = async (e) => {
@@ -173,17 +183,14 @@ f.onsubmit = async (e) => {
   try {
     await auth.authStateReady();
     const u = auth.currentUser || (await signInAnonymously(auth)).user;
-    const photos = [];
-    for (const [i, file] of [...f.photos.files].slice(0, 3).entries()) {
-      const r = ref(st, `complaints/${u.uid}/${Date.now()}_${i}.jpg`);
-      await uploadBytes(r, await shrink(file), { contentType: "image/jpeg" });
-      photos.push(await getDownloadURL(r));
-    }
+    const shots = [];
+    for (const file of [...f.photos.files].slice(0, 3)) shots.push(await shrink(file));
     const { lat, lng } = pin.getLatLng();
     const d = await addDoc(collection(db, "complaints"), {
       title: f.title.value.trim(), detail: f.detail.value.trim(), category: f.category.value,
-      lat, lng, photos, status: "pending", createdAt: serverTimestamp(), uid: u.uid,
+      lat, lng, photoCount: shots.length, status: "pending", createdAt: serverTimestamp(), uid: u.uid,
     });
+    for (const [i, data] of shots.entries()) await setDoc(doc(db, "complaints", d.id, "photos", String(i)), { data });
     const name = f.name.value.trim(), phone = f.phone.value.trim();
     if (name || phone) await setDoc(doc(db, "complaints", d.id, "private", "contact"), { name, phone });
     f.reset(); showForm(false);

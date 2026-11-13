@@ -37,9 +37,8 @@ export const fmtDate = (ts) =>
 
 export const no = (id) => "KT-" + id.slice(0, 6).toUpperCase();
 
-// แสดงเฉพาะรูปที่อยู่ใน Firebase Storage เท่านั้น
-export const safePhotos = (p) =>
-  (Array.isArray(p) ? p : []).filter((u) => typeof u === "string" && u.startsWith("https://firebasestorage.googleapis.com/"));
+// รูปเก็บเป็น data URL (JPEG base64) ใน Firestore: complaints/<id>/photos/<0-2>
+export const isPhoto = (u) => typeof u === "string" && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(u);
 
 export const badge = (st) => {
   const s = STATUS[st] || STATUS.pending;

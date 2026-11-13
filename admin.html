@@ -44,9 +44,9 @@
 <div id="toast" hidden role="status"></div>
 
 <script type="module">
-import { firebaseConfig, FB, CATS, STATUS, esc, fmtDate, no, safePhotos } from "./config.js";
+import { firebaseConfig, FB, CATS, STATUS, esc, fmtDate, no, isPhoto } from "./config.js";
 const { initializeApp } = await import(FB + "firebase-app.js");
-const { getFirestore, collection, query, orderBy, limit, onSnapshot, doc, getDoc, updateDoc, deleteDoc, serverTimestamp } = await import(FB + "firebase-firestore.js");
+const { getFirestore, collection, query, orderBy, limit, onSnapshot, doc, getDoc, getDocs, updateDoc, deleteDoc, serverTimestamp } = await import(FB + "firebase-firestore.js");
 const { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } = await import(FB + "firebase-auth.js");
 
 const app = initializeApp(firebaseConfig);
@@ -88,7 +88,7 @@ function render() {
   <tr data-id="${d.id}">
     <td><b>${no(d.id)}</b><br><span class="muted">${fmtDate(d.createdAt)}</span></td>
     <td style="min-width:240px"><span class="badge">${esc(CATS[d.category] || CATS.other)}</span><br><b>${esc(d.title)}</b><br>${esc(d.detail)}<br>
-      ${safePhotos(d.photos).map((u, i) => `<a href="${esc(u)}" target="_blank" rel="noopener">รูป ${i + 1}</a>`).join(" · ")}
+      ${d.photoCount > 0 ? `<button class="btn" data-a="photos">ดูรูป (${Number(d.photoCount)})</button><div class="pop" data-ph style="max-width:260px"></div>` : ""}
       <br><a href="https://www.google.com/maps?q=${Number(d.lat)},${Number(d.lng)}" target="_blank" rel="noopener">เปิดตำแหน่งใน Google Maps</a></td>
     <td><select data-f="status" aria-label="สถานะ">${Object.entries(STATUS).map(([k, s]) => `<option value="${k}" ${k === d.status ? "selected" : ""}>${s.t}</option>`).join("")}</select></td>
     <td style="min-width:220px"><textarea data-f="note" rows="2" maxlength="500" aria-label="ตอบกลับประชาชน">${esc(d.note)}</textarea></td>
@@ -110,7 +110,11 @@ $("rows").onclick = async (e) => {
     } else if (a === "contact") {
       const s = await getDoc(doc(r, "private", "contact"));
       toast(s.exists() ? `ผู้แจ้ง: ${s.data().name || "-"} โทร ${s.data().phone || "-"}` : "ผู้แจ้งไม่ได้ให้ข้อมูลติดต่อ");
+    } else if (a === "photos") {
+      const s = await getDocs(collection(r, "photos"));
+      tr.querySelector("[data-ph]").innerHTML = s.docs.map((x) => x.data().data).filter(isPhoto).map((u) => `<img src="${u}" alt="รูปประกอบ">`).join("");
     } else if (a === "del" && confirm("ลบเรื่องนี้ถาวร?")) {
+      for (const p of (await getDocs(collection(r, "photos"))).docs) await deleteDoc(p.ref);
       await deleteDoc(doc(r, "private", "contact")).catch(() => {});
       await deleteDoc(r);
       toast("ลบแล้ว");

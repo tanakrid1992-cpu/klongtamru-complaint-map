@@ -8,7 +8,7 @@ service cloud.firestore {
     match /complaints/{id} {
       allow read: if true;
       allow create: if request.auth != null
-        && request.resource.data.keys().hasOnly(['title','detail','category','lat','lng','photos','status','createdAt','uid'])
+        && request.resource.data.keys().hasOnly(['title','detail','category','lat','lng','photoCount','status','createdAt','uid'])
         && request.resource.data.uid == request.auth.uid
         && request.resource.data.status == 'pending'
         && request.resource.data.createdAt == request.time
@@ -16,8 +16,19 @@ service cloud.firestore {
         && request.resource.data.detail is string && request.resource.data.detail.size() <= 1000
         && request.resource.data.category is string && request.resource.data.category.size() <= 20
         && request.resource.data.lat is number && request.resource.data.lng is number
-        && request.resource.data.photos is list && request.resource.data.photos.size() <= 3;
+        && request.resource.data.photoCount is int && request.resource.data.photoCount >= 0 && request.resource.data.photoCount <= 3;
       allow update, delete: if isStaff();
+
+      // รูปถ่ายย่อขนาด เก็บเป็นข้อความ base64
+      match /photos/{n} {
+        allow read: if true;
+        allow create: if request.auth != null
+          && get(/databases/$(db)/documents/complaints/$(id)).data.uid == request.auth.uid
+          && n in ['0','1','2']
+          && request.resource.data.keys().hasOnly(['data'])
+          && request.resource.data.data is string && request.resource.data.data.size() < 500000;
+        allow delete: if isStaff();
+      }
 
       // ชื่อและเบอร์ผู้แจ้ง: อ่านได้เฉพาะเจ้าหน้าที่
       match /private/{docId} {
