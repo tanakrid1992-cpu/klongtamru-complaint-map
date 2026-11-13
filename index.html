@@ -35,8 +35,8 @@
 
     <form id="form" hidden>
       <h2 style="margin:0;font-size:20px">แจ้งปัญหาใหม่</h2>
-      <div class="muted">ลากหมุดสีน้ำเงินบนแผนที่ไปยังจุดเกิดเหตุ</div>
-      <button type="button" class="btn" id="btnGps">ใช้ตำแหน่งปัจจุบัน</button>
+      <div class="muted">หมุดจะไปยังจุดที่คุณยืนอยู่เมื่ออนุญาตตำแหน่ง ลากหมุดหรือแตะแผนที่เพื่อปรับได้</div>
+      <button type="button" class="btn" id="btnGps">ปักหมุดจุดที่ยืนอยู่</button>
       <label>ประเภทปัญหา<select name="category" required></select></label>
       <label>หัวข้อ<input name="title" required maxlength="100" placeholder="เช่น ไฟส่องสว่างดับ"></label>
       <label>รายละเอียด<textarea name="detail" rows="3" maxlength="1000"></textarea></label>
@@ -55,7 +55,7 @@
 <div id="toast" hidden role="status"></div>
 
 <script type="module">
-import { firebaseConfig, FB, CENTER, ZOOM, CATS, STATUS, esc, fmtDate, no, safePhotos, badge } from "./config.js";
+import { firebaseConfig, FB, CENTER, ZOOM, GOOGLE_MAPS_KEY, CATS, STATUS, esc, fmtDate, no, safePhotos, badge } from "./config.js";
 const { initializeApp } = await import(FB + "firebase-app.js");
 const { getFirestore, collection, query, orderBy, limit, onSnapshot, addDoc, setDoc, doc, serverTimestamp } = await import(FB + "firebase-firestore.js");
 const { getAuth, signInAnonymously } = await import(FB + "firebase-auth.js");
@@ -68,7 +68,42 @@ const toast = (m) => { $("toast").textContent = m; $("toast").hidden = false; se
 
 // ---------- แผนที่ ----------
 const map = L.map("map").setView(CENTER, ZOOM);
-L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "&copy; OpenStreetMap" }).addTo(map);
+const street = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "&copy; OpenStreetMap" }).addTo(map);
+const sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", { maxZoom: 19, maxNativeZoom: 18, attribution: "Tiles &copy; Esri" });
+const layers = L.control.layers({ "แผนที่ถนน": street, "ภาพดาวเทียม": sat }, null, { collapsed: false }).addTo(map);
+
+// Google Maps / Google Earth (ดาวเทียม): ทำงานเมื่อใส่ GOOGLE_MAPS_KEY ใน config.js
+if (GOOGLE_MAPS_KEY) {
+  const load = (src) => new Promise((ok, no) => { const s = document.createElement("script"); s.src = src; s.onload = ok; s.onerror = no; document.head.append(s); });
+  window.__gm = async () => {
+    await load("https://unpkg.com/leaflet.gridlayer.googlemutant@0.14.1/dist/Leaflet.GoogleMutant.js");
+    layers.addBaseLayer(L.gridLayer.googleMutant({ type: "roadmap", maxZoom: 21 }), "Google Maps");
+    layers.addBaseLayer(L.gridLayer.googleMutant({ type: "hybrid", maxZoom: 21 }), "Google Earth (ดาวเทียม)");
+  };
+  load(`https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(GOOGLE_MAPS_KEY)}&loading=async&callback=__gm`).catch(() => toast("โหลด Google Maps ไม่สำเร็จ"));
+}
+
+// ---------- ตำแหน่งของฉัน ----------
+let me = null;
+const locate = () => map.locate({ setView: true, maxZoom: 17, enableHighAccuracy: true });
+map.on("locationfound", (e) => {
+  me?.remove();
+  me = L.circleMarker(e.latlng, { radius: 8, color: "#fff", weight: 3, fillColor: "#2563EB", fillOpacity: 1 }).bindTooltip("ตำแหน่งของคุณ").addTo(map);
+  pin?.setLatLng(e.latlng);
+});
+map.on("locationerror", () => toast("อ่านตำแหน่งไม่ได้ กรุณาอนุญาตการเข้าถึงตำแหน่ง หรือลากหมุดแทน"));
+const LocateBtn = L.Control.extend({
+  options: { position: "topleft" },
+  onAdd() {
+    const b = L.DomUtil.create("button", "btn");
+    b.type = "button"; b.textContent = "ตำแหน่งของฉัน"; b.style.boxShadow = "0 1px 5px rgba(0,0,0,.4)";
+    L.DomEvent.disableClickPropagation(b);
+    b.onclick = locate;
+    return b;
+  },
+});
+map.addControl(new LocateBtn());
+
 const layer = L.layerGroup().addTo(map);
 const markers = {};
 let items = [], cat = "all", pin = null;
@@ -115,15 +150,13 @@ const f = $("form");
 f.category.innerHTML = Object.entries(CATS).map(([k, t]) => `<option value="${k}">${t}</option>`).join("");
 const showForm = (on) => {
   f.hidden = !on; $("listView").hidden = on;
-  if (on) { pin = L.marker(map.getCenter(), { draggable: true }).addTo(map); f.scrollIntoView({ behavior: "smooth" }); }
+  if (on) { pin = L.marker(me ? me.getLatLng() : map.getCenter(), { draggable: true }).addTo(map); locate(); f.scrollIntoView({ behavior: "smooth" }); }
   else if (pin) { pin.remove(); pin = null; }
 };
 $("btnNew").onclick = () => showForm(true);
 $("btnCancel").onclick = () => showForm(false);
 map.on("click", (e) => pin?.setLatLng(e.latlng));
-$("btnGps").onclick = () => navigator.geolocation?.getCurrentPosition(
-  (p) => { const ll = [p.coords.latitude, p.coords.longitude]; pin?.setLatLng(ll); map.setView(ll, 17); },
-  () => toast("ไม่สามารถอ่านตำแหน่งได้ กรุณาลากหมุดแทน"));
+$("btnGps").onclick = locate;
 
 async function shrink(file) {
   const bmp = await createImageBitmap(file);

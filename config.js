@@ -10,6 +10,9 @@ export const firebaseConfig = {
 export const FB = "https://www.gstatic.com/firebasejs/10.12.2/";
 export const CENTER = [13.447074, 100.993681];
 export const ZOOM = 15;
+// ใส่ API key ของ Google Maps Platform (Maps JavaScript API) เพื่อเพิ่มชั้น Google Maps และ Google Earth (ดาวเทียม)
+// เว้นว่างไว้ = ใช้แผนที่ถนน OpenStreetMap และภาพดาวเทียม Esri ซึ่งฟรี
+export const GOOGLE_MAPS_KEY = "";
 
 export const CATS = {
   road: "ถนน/ทางเท้า",
