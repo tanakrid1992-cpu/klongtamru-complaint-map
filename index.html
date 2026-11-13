@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>คลองตำหรุ แจ้งเรื่อง | เทศบาลตำบลคลองตำหรุ</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="style.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body>
+<header>
+  <div>
+    <h1>คลองตำหรุ แจ้งเรื่อง</h1>
+    <small>เทศบาลตำบลคลองตำหรุ จังหวัดชลบุรี</small>
+  </div>
+  <div class="row" style="flex:none">
+    <a class="btn" href="admin.html">เจ้าหน้าที่</a>
+    <button class="btn alert" id="btnNew">+ แจ้งปัญหา</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <aside>
+    <section id="listView" style="display:flex;flex-direction:column;gap:14px">
+      <div>
+        <h2 style="margin:0;font-size:20px">เรื่องร้องเรียน</h2>
+        <span class="muted" id="total">กำลังโหลด…</span>
+      </div>
+      <input id="q" type="search" placeholder="ค้นหาปัญหา" aria-label="ค้นหาปัญหา">
+      <div class="stats" id="stats"></div>
+      <div class="chips" id="chips"></div>
+      <div id="list" style="display:flex;flex-direction:column;gap:10px"></div>
+    </section>
+
+    <form id="form" hidden>
+      <h2 style="margin:0;font-size:20px">แจ้งปัญหาใหม่</h2>
+      <div class="muted">ลากหมุดสีน้ำเงินบนแผนที่ไปยังจุดเกิดเหตุ</div>
+      <button type="button" class="btn" id="btnGps">ใช้ตำแหน่งปัจจุบัน</button>
+      <label>ประเภทปัญหา<select name="category" required></select></label>
+      <label>หัวข้อ<input name="title" required maxlength="100" placeholder="เช่น ไฟส่องสว่างดับ"></label>
+      <label>รายละเอียด<textarea name="detail" rows="3" maxlength="1000"></textarea></label>
+      <label>รูปถ่าย (สูงสุด 3 รูป)<input name="photos" type="file" accept="image/*" multiple></label>
+      <label>ชื่อผู้แจ้ง (ไม่บังคับ)<input name="name" maxlength="100"></label>
+      <label>เบอร์ติดต่อ (ไม่บังคับ)<input name="phone" type="tel" maxlength="20"></label>
+      <div class="muted">ชื่อและเบอร์ติดต่อเห็นได้เฉพาะเจ้าหน้าที่</div>
+      <div class="row">
+        <button type="button" class="btn" id="btnCancel">ยกเลิก</button>
+        <button class="btn alert" id="btnSend">ส่งเรื่อง</button>
+      </div>
+    </form>
+  </aside>
+  <div id="map"></div>
+</div>
+<div id="toast" hidden role="status"></div>
+
+<script type="module">
+import { firebaseConfig, FB, CENTER, ZOOM, CATS, STATUS, esc, fmtDate, no, safePhotos, badge } from "./config.js";
+const { initializeApp } = await import(FB + "firebase-app.js");
+const { getFirestore, collection, query, orderBy, limit, onSnapshot, addDoc, setDoc, doc, serverTimestamp } = await import(FB + "firebase-firestore.js");
+const { getAuth, signInAnonymously } = await import(FB + "firebase-auth.js");
+const { getStorage, ref, uploadBytes, getDownloadURL } = await import(FB + "firebase-storage.js");
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app), auth = getAuth(app), st = getStorage(app);
+const $ = (id) => document.getElementById(id);
+const toast = (m) => { $("toast").textContent = m; $("toast").hidden = false; setTimeout(() => ($("toast").hidden = true), 4000); };
+
+// ---------- แผนที่ ----------
+const map = L.map("map").setView(CENTER, ZOOM);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "&copy; OpenStreetMap" }).addTo(map);
+const layer = L.layerGroup().addTo(map);
+const markers = {};
+let items = [], cat = "all", pin = null;
+
+const popup = (d) => `<div class="pop">${badge(d.status)} <span class="badge">${esc(CATS[d.category] || CATS.other)}</span>
+<h3>${esc(d.title)}</h3><p>${esc(d.detail)}</p>
+<p class="muted">${no(d.id)} · ${fmtDate(d.createdAt)}</p>
+${d.note ? `<p><b>เจ้าหน้าที่:</b> ${esc(d.note)}</p>` : ""}
+${safePhotos(d.photos).map((u) => `<img src="${esc(u)}" alt="รูปประกอบ" loading="lazy">`).join("")}</div>`;
+
+function render() {
+  const kw = $("q").value.trim().toLowerCase();
+  const shown = items.filter((d) => (cat === "all" || d.category === cat) && (!kw || (d.title + " " + d.detail).toLowerCase().includes(kw)));
+  $("total").textContent = `ทั้งหมด ${items.length} รายการ`;
+  $("stats").innerHTML = Object.entries(STATUS).map(([k, s]) =>
+    `<div style="background:${s.bg};color:${s.fg}"><b>${items.filter((d) => d.status === k).length}</b>${s.t}</div>`).join("");
+  $("chips").innerHTML = [["all", "ทั้งหมด"], ...Object.entries(CATS)].map(([k, t]) =>
+    `<button data-cat="${k}" class="${k === cat ? "on" : ""}">${t}</button>`).join("");
+  $("list").innerHTML = shown.map((d) => `<button class="card" data-id="${d.id}">
+    <span>${badge(d.status)} <span class="badge">${esc(CATS[d.category] || CATS.other)}</span></span>
+    <h2>${esc(d.title)}</h2><p>${esc(d.detail).slice(0, 120)}</p>
+    <span class="muted">${no(d.id)} · ${fmtDate(d.createdAt)}</span></button>`).join("") || `<span class="muted">ไม่พบรายการ</span>`;
+  layer.clearLayers();
+  for (const d of shown) {
+    if (typeof d.lat !== "number" || typeof d.lng !== "number") continue;
+    markers[d.id] = L.circleMarker([d.lat, d.lng], { radius: 11, color: "#fff", weight: 3, fillColor: (STATUS[d.status] || STATUS.pending).c, fillOpacity: 1 })
+      .bindPopup(popup(d), { maxWidth: 260 }).addTo(layer);
+  }
+}
+
+onSnapshot(query(collection(db, "complaints"), orderBy("createdAt", "desc"), limit(500)),
+  (snap) => { items = snap.docs.map((x) => ({ id: x.id, ...x.data({ serverTimestamps: "estimate" }) })); render(); },
+  (e) => { $("total").textContent = "โหลดข้อมูลไม่ได้: " + e.code; });
+
+$("q").oninput = render;
+$("chips").onclick = (e) => { const b = e.target.closest("[data-cat]"); if (b) { cat = b.dataset.cat; render(); } };
+$("list").onclick = (e) => {
+  const m = markers[e.target.closest("[data-id]")?.dataset.id];
+  if (m) { map.flyTo(m.getLatLng(), 17); m.openPopup(); }
+};
+
+// ---------- แจ้งปัญหา ----------
+const f = $("form");
+f.category.innerHTML = Object.entries(CATS).map(([k, t]) => `<option value="${k}">${t}</option>`).join("");
+const showForm = (on) => {
+  f.hidden = !on; $("listView").hidden = on;
+  if (on) { pin = L.marker(map.getCenter(), { draggable: true }).addTo(map); f.scrollIntoView({ behavior: "smooth" }); }
+  else if (pin) { pin.remove(); pin = null; }
+};
+$("btnNew").onclick = () => showForm(true);
+$("btnCancel").onclick = () => showForm(false);
+map.on("click", (e) => pin?.setLatLng(e.latlng));
+$("btnGps").onclick = () => navigator.geolocation?.getCurrentPosition(
+  (p) => { const ll = [p.coords.latitude, p.coords.longitude]; pin?.setLatLng(ll); map.setView(ll, 17); },
+  () => toast("ไม่สามารถอ่านตำแหน่งได้ กรุณาลากหมุดแทน"));
+
+async function shrink(file) {
+  const bmp = await createImageBitmap(file);
+  const s = Math.min(1, 1280 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(bmp.width * s); c.height = Math.round(bmp.height * s);
+  c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+  return new Promise((r) => c.toBlob(r, "image/jpeg", 0.8));
+}
+
+f.onsubmit = async (e) => {
+  e.preventDefault();
+  $("btnSend").disabled = true; $("btnSend").textContent = "กำลังส่ง…";
+  try {
+    await auth.authStateReady();
+    const u = auth.currentUser || (await signInAnonymously(auth)).user;
+    const photos = [];
+    for (const [i, file] of [...f.photos.files].slice(0, 3).entries()) {
+      const r = ref(st, `complaints/${u.uid}/${Date.now()}_${i}.jpg`);
+      await uploadBytes(r, await shrink(file), { contentType: "image/jpeg" });
+      photos.push(await getDownloadURL(r));
+    }
+    const { lat, lng } = pin.getLatLng();
+    const d = await addDoc(collection(db, "complaints"), {
+      title: f.title.value.trim(), detail: f.detail.value.trim(), category: f.category.value,
+      lat, lng, photos, status: "pending", createdAt: serverTimestamp(), uid: u.uid,
+    });
+    const name = f.name.value.trim(), phone = f.phone.value.trim();
+    if (name || phone) await setDoc(doc(db, "complaints", d.id, "private", "contact"), { name, phone });
+    f.reset(); showForm(false);
+    toast(`ส่งเรื่องแล้ว เลขที่ ${no(d.id)}`);
+  } catch (err) {
+    console.error(err); toast("ส่งไม่สำเร็จ: " + (err.code || err.message));
+  }
+  $("btnSend").disabled = false; $("btnSend").textContent = "ส่งเรื่อง";
+};
+</script>
+</body>
+</html>

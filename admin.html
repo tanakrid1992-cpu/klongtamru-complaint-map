@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>หลังบ้านเจ้าหน้าที่ | คลองตำหรุ แจ้งเรื่อง</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div>
+    <h1>หลังบ้านเจ้าหน้าที่</h1>
+    <small>คลองตำหรุ แจ้งเรื่อง</small>
+  </div>
+  <div class="row" style="flex:none">
+    <a class="btn" href="index.html">หน้าแผนที่</a>
+    <button class="btn" id="btnOut" hidden>ออกจากระบบ</button>
+  </div>
+</header>
+
+<main class="admin">
+  <form id="login" hidden style="max-width:360px;margin:40px auto;background:#fff;padding:20px;border-radius:14px;border:1px solid #DDE3DF">
+    <h2 style="margin:0;font-size:20px">เข้าสู่ระบบ</h2>
+    <label>อีเมล<input name="email" type="email" required autocomplete="username"></label>
+    <label>รหัสผ่าน<input name="password" type="password" required autocomplete="current-password"></label>
+    <button class="btn primary">เข้าสู่ระบบ</button>
+    <div class="muted" id="msg"></div>
+  </form>
+
+  <section id="panel" hidden style="display:flex;flex-direction:column;gap:14px">
+    <div class="stats" id="stats" style="max-width:520px"></div>
+    <div class="row" style="max-width:520px">
+      <select id="fStatus" aria-label="กรองสถานะ"></select>
+      <select id="fCat" aria-label="กรองประเภท"></select>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>เลขที่ / วันที่</th><th>เรื่อง</th><th>สถานะ</th><th>ตอบกลับประชาชน</th><th>จัดการ</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+<div id="toast" hidden role="status"></div>
+
+<script type="module">
+import { firebaseConfig, FB, CATS, STATUS, esc, fmtDate, no, safePhotos } from "./config.js";
+const { initializeApp } = await import(FB + "firebase-app.js");
+const { getFirestore, collection, query, orderBy, limit, onSnapshot, doc, getDoc, updateDoc, deleteDoc, serverTimestamp } = await import(FB + "firebase-firestore.js");
+const { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut } = await import(FB + "firebase-auth.js");
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app), auth = getAuth(app);
+const $ = (id) => document.getElementById(id);
+const toast = (m) => { $("toast").textContent = m; $("toast").hidden = false; setTimeout(() => ($("toast").hidden = true), 4000); };
+let items = [], unsub = null;
+
+$("fStatus").innerHTML = `<option value="all">ทุกสถานะ</option>` + Object.entries(STATUS).map(([k, s]) => `<option value="${k}">${s.t}</option>`).join("");
+$("fCat").innerHTML = `<option value="all">ทุกประเภท</option>` + Object.entries(CATS).map(([k, t]) => `<option value="${k}">${t}</option>`).join("");
+
+function show(view) { $("login").hidden = view !== "login"; $("panel").hidden = view !== "panel"; $("btnOut").hidden = view !== "panel"; }
+
+onAuthStateChanged(auth, async (u) => {
+  unsub?.(); unsub = null;
+  if (!u || u.isAnonymous) return show("login");
+  const ok = await getDoc(doc(db, "staff", u.uid)).then((s) => s.exists()).catch(() => false);
+  if (!ok) { $("msg").textContent = "บัญชีนี้ยังไม่ได้รับสิทธิ์เจ้าหน้าที่ (UID: " + u.uid + ")"; return show("login"); }
+  show("panel");
+  unsub = onSnapshot(query(collection(db, "complaints"), orderBy("createdAt", "desc"), limit(1000)),
+    (snap) => { items = snap.docs.map((x) => ({ id: x.id, ...x.data({ serverTimestamps: "estimate" }) })); render(); },
+    (e) => toast("โหลดข้อมูลไม่ได้: " + e.code));
+});
+
+$("login").onsubmit = async (e) => {
+  e.preventDefault();
+  $("msg").textContent = "กำลังเข้าสู่ระบบ…";
+  try { await signInWithEmailAndPassword(auth, e.target.email.value, e.target.password.value); $("msg").textContent = ""; }
+  catch (err) { $("msg").textContent = "เข้าสู่ระบบไม่สำเร็จ: " + err.code; }
+};
+$("btnOut").onclick = () => signOut(auth);
+$("fStatus").onchange = $("fCat").onchange = render;
+
+function render() {
+  const fs = $("fStatus").value, fc = $("fCat").value;
+  $("stats").innerHTML = Object.entries(STATUS).map(([k, s]) =>
+    `<div style="background:${s.bg};color:${s.fg}"><b>${items.filter((d) => d.status === k).length}</b>${s.t}</div>`).join("");
+  $("rows").innerHTML = items.filter((d) => (fs === "all" || d.status === fs) && (fc === "all" || d.category === fc)).map((d) => `
+  <tr data-id="${d.id}">
+    <td><b>${no(d.id)}</b><br><span class="muted">${fmtDate(d.createdAt)}</span></td>
+    <td style="min-width:240px"><span class="badge">${esc(CATS[d.category] || CATS.other)}</span><br><b>${esc(d.title)}</b><br>${esc(d.detail)}<br>
+      ${safePhotos(d.photos).map((u, i) => `<a href="${esc(u)}" target="_blank" rel="noopener">รูป ${i + 1}</a>`).join(" · ")}
+      <br><a href="https://www.google.com/maps?q=${Number(d.lat)},${Number(d.lng)}" target="_blank" rel="noopener">เปิดตำแหน่งใน Google Maps</a></td>
+    <td><select data-f="status" aria-label="สถานะ">${Object.entries(STATUS).map(([k, s]) => `<option value="${k}" ${k === d.status ? "selected" : ""}>${s.t}</option>`).join("")}</select></td>
+    <td style="min-width:220px"><textarea data-f="note" rows="2" maxlength="500" aria-label="ตอบกลับประชาชน">${esc(d.note)}</textarea></td>
+    <td><div style="display:flex;flex-direction:column;gap:6px">
+      <button class="btn primary" data-a="save">บันทึก</button>
+      <button class="btn" data-a="contact">ผู้แจ้ง</button>
+      <button class="btn" data-a="del">ลบ</button></div></td>
+  </tr>`).join("") || `<tr><td colspan="5" class="muted">ไม่พบรายการ</td></tr>`;
+}
+
+$("rows").onclick = async (e) => {
+  const a = e.target.dataset.a, tr = e.target.closest("tr[data-id]");
+  if (!a || !tr) return;
+  const r = doc(db, "complaints", tr.dataset.id);
+  try {
+    if (a === "save") {
+      await updateDoc(r, { status: tr.querySelector("[data-f=status]").value, note: tr.querySelector("[data-f=note]").value.trim(), updatedAt: serverTimestamp() });
+      toast("บันทึกแล้ว");
+    } else if (a === "contact") {
+      const s = await getDoc(doc(r, "private", "contact"));
+      toast(s.exists() ? `ผู้แจ้ง: ${s.data().name || "-"} โทร ${s.data().phone || "-"}` : "ผู้แจ้งไม่ได้ให้ข้อมูลติดต่อ");
+    } else if (a === "del" && confirm("ลบเรื่องนี้ถาวร?")) {
+      await deleteDoc(doc(r, "private", "contact")).catch(() => {});
+      await deleteDoc(r);
+      toast("ลบแล้ว");
+    }
+  } catch (err) { toast("ไม่สำเร็จ: " + (err.code || err.message)); }
+};
+</script>
+</body>
+</html>

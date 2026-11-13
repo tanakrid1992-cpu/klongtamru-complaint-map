@@ -1,0 +1,38 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+    function isStaff() {
+      return request.auth != null && exists(/databases/$(db)/documents/staff/$(request.auth.uid));
+    }
+
+    match /complaints/{id} {
+      allow read: if true;
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly(['title','detail','category','lat','lng','photos','status','createdAt','uid'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.title is string && request.resource.data.title.size() > 0 && request.resource.data.title.size() <= 100
+        && request.resource.data.detail is string && request.resource.data.detail.size() <= 1000
+        && request.resource.data.category is string && request.resource.data.category.size() <= 20
+        && request.resource.data.lat is number && request.resource.data.lng is number
+        && request.resource.data.photos is list && request.resource.data.photos.size() <= 3;
+      allow update, delete: if isStaff();
+
+      // ชื่อและเบอร์ผู้แจ้ง: อ่านได้เฉพาะเจ้าหน้าที่
+      match /private/{docId} {
+        allow create: if request.auth != null
+          && get(/databases/$(db)/documents/complaints/$(id)).data.uid == request.auth.uid
+          && request.resource.data.keys().hasOnly(['name','phone'])
+          && request.resource.data.name is string && request.resource.data.name.size() <= 100
+          && request.resource.data.phone is string && request.resource.data.phone.size() <= 20;
+        allow read, delete: if isStaff();
+      }
+    }
+
+    // เพิ่มเจ้าหน้าที่ด้วยมือใน Firebase Console เท่านั้น
+    match /staff/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}
